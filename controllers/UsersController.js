@@ -1,42 +1,37 @@
-import crypto from 'crypto';
-import DBClient from '../utils/db';
-import redisClient from '../utils/redis';
+const sha1 = require('sha1');
+const mongodb = require('mongodb');
+const Redis = require('../utils/redis');
+const Mongo = require('../utils/db');
 
-const Bull = require('bull');
-const mongo = require('mongodb');
-
-class UsersController {
+class UsersContoller {
   static async postNew(request, response) {
-    const userQueue = new Bull('userQueue');
     const { email, password } = request.body;
-    if (!email) return response.status(400).json({ error: 'Missing email' });
-    if (!password) return response.status(400).json({ error: 'Missing password' });
-
-    const users = await DBClient.db.collection('users');
-    const existUser = await users.find({ email }).toArray();
-    if (existUser.length > 0) return response.status(400).json({ error: 'Already exist' });
-
-    const hashPw = crypto.createHash('SHA1').update(password).digest('hex');
-    const createUser = await users.insertOne({ email, password: hashPw });
-    const newUser = { id: createUser.insertedId, email };
-    // return response.status(201).json(newUser);
-
-    userQueue.add({ userId: newUser.id });
-    response.statusCode = 201;
-    return response.json(newUser);
+    if (!email) {
+      response.status(400).json({ error: 'Missing email' });
+    }
+    if (!password) {
+      response.status(400).json({ error: 'Missing password' });
+    }
+    if (await Mongo.users.findOne({ email })) {
+      return response.status(400).json({ error: 'Already exist' });
+    }
+    const newUser = await Mongo.users.insertOne({
+      email,
+      password: sha1(password),
+    });
+    return response.status(201).json({ id: newUser.insertedId, email });
   }
 
   static async getMe(request, response) {
-    const token = request.headers['x-token'];
-    const id = await redisClient.get(`auth_${token}`);
-    const objectId = new mongo.ObjectID(id);
-    const user = await DBClient.db.collection('users').findOne({ _id: objectId });
-
-    if (!user) {
+    const token = request.header('X-Token');
+    const authToken = `auth_${token}`;
+    const curUserToken = await Redis.get(authToken);
+    if (!curUserToken) {
       return response.status(401).json({ error: 'Unauthorized' });
     }
-    return response.json({ id, email: user.email });
+    const curUser = await Mongo.users.findOne({ _id: new mongodb.ObjectId(curUserToken) });
+    return response.status(200).json({ id: curUser._id, email: curUser.email });
   }
 }
 
-module.exports = UsersController;
+module.exports = UsersContoller;
